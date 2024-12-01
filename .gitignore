@@ -1,0 +1,4 @@
+*.csv
+*.npz
+hls-foundation-os/*
+prithvi/*
