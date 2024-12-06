@@ -33,11 +33,15 @@ def load_model():
 
     # let us use only 1 frame for now (the model was trained on 3 frames)
     model_args["num_frames"] = 1
-
+    # model_args['decoder_embed_dim']= 768
     model_args['img_size']= 128
+    print(model_args)
 
     # instantiate model
     prithvi = MaskedAutoencoderViT(**model_args)
+    prithvi.eval()
+    del checkpoint['pos_embed']
+    del checkpoint['decoder_pos_embed']
 
     _ = prithvi.load_state_dict(checkpoint, strict=False)
 
@@ -108,9 +112,9 @@ def load_data() -> tuple:
     b,t= train_timeseries.shape
     train_timeseries_tensor= torch.from_numpy(train_timeseries).to(torch.float32).view(b, 1, t)
     train_labels_tensor= torch.from_numpy(train_labels).to(torch.float32)
-    b,t= test_timeseries.shape
+    b,t= valid_timeseries.shape
     valid_timeseries_tensor = torch.from_numpy(valid_timeseries).to(torch.float32).view(b, 1, t)
-    valid_labels_tensor= torch.from_numpy(valid_tensor).to(torch.float32).view(b, 1, t)
+    valid_labels_tensor= torch.from_numpy(valid_labels).to(torch.float32).view(b, 1, t)
     
     train_images = []
     valid_images = []
@@ -188,7 +192,7 @@ class FloodViT(nn.Module):
         self.fcl1= nn.Linear(49152, 730)
         self.fcl2= nn.Linear(730*2, 730)
         self.relu= nn.ReLU()
-        self.batchnorm= nn.BatchNorm1d(730)
+        self.batchnorm= nn.BatchNorm1d(1460)
 
     def forward(self, x, t):
         # Preprocessing and patch embedding
@@ -201,6 +205,7 @@ class FloodViT(nn.Module):
         x= self.relu(x)
         # t= self.batchnorm(t)
         x= torch.concat([x, t], dim=-1)
+        x= self.batchnorm(x)
         x= self.fcl2(x)
         x= self.relu(x)
         
@@ -208,31 +213,27 @@ class FloodViT(nn.Module):
 
 
 if __name__=='__main__':
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     # load data
-    train_image_tensor, 
-    train_timeseries_tensor, 
-    train_label_tensor, 
-    valid_image_tensor, 
-    valid_timeseries_tensor, 
-    valid_label_tensor= load_data()
+    train_images_tensor, train_timeseries_tensor, train_labels_tensor, valid_image_tensor, valid_timeseries_tensor, valid_label_tensor= load_data()
 
     # load model
     pretrained_model= load_model()
     model= FloodViT(pretrained_model, 1)
     # Freeze pretrained_model parameters
-    for name, param in new_model.named_parameters():
+    for name, param in model.named_parameters():
         if name.startswith("pretrained_model") or name.startswith('decoder'):
             param.requires_grad = False
     
     # define optimizer and loss function
     pos_weight = torch.tensor([5.0]).to(device)
     criterion= nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-    optimizer= optim.AdamW(new_model.parameters(), lr=1e-3)
+    optimizer= optim.AdamW(model.parameters(), lr=1e-2)
 
     # Training loop
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
     model= model.to(device)
-    dataset = LoadData(transform=True)
+    dataset = LoadData(train_images_tensor, train_timeseries_tensor, train_labels_tensor)
 
     # Create DataLoader for batch processing
     batch_size = 32
