@@ -74,6 +74,9 @@ def load_data() -> tuple:
     data['logRain']= np.log(data.precipitation+1e-6) # add a epsilo to avoid zeros
     data['normRain']= (data.logRain - data.logRain.mean()) / data.logRain.std()
 
+    data_test['logRain']= np.log(data_test.precipitation + 1e-6)
+    data_test['normRain']= (data_test.logRain - data_test.logRain.mean()) / data_test.logRain.std()
+
     images_path = os.path.join(BASE_PATH, 'composite_images.npz')
     images = np.load(images_path)
     print(images)
@@ -118,6 +121,7 @@ def load_data() -> tuple:
     
     train_images = []
     valid_images = []
+    test_images  = []
 
     for event_id in event_splits.index:
         img = preprocess_image(images[event_id])
@@ -128,14 +132,23 @@ def load_data() -> tuple:
 
     for event_id in data_test['event_id'].unique():
         img = preprocess_image(images[event_id])
+        test_images.append(img)
+        
 
     train_images = np.stack(train_images, axis=0)
     valid_images = np.stack(valid_images, axis=0)
+    test_images  = np.stack(test_images, axis=0)
 
     train_images_tensor= torch.from_numpy(train_images).permute([0, 3, 1, 2]).to(torch.float32).reshape(train_images.shape[0], 6, 1, 128, 128)
     valid_images_tensor= torch.from_numpy(valid_images).permute([0, 3, 1, 2]).to(torch.float32).reshape(valid_images.shape[0], 6, 1, 128, 128)
 
-    return (train_images_tensor, train_timeseries_tensor, train_labels_tensor, valid_images_tensor, valid_timeseries_tensor, valid_labels_tensor)
+    test_timeseries = data_test.pivot(index='event_id', columns='event_t', values='normRain').to_numpy()
+    b,t= test_timeseries.shape
+
+    test_images_tensor= torch.from_numpy(test_images).permute([0, 3, 1, 2]).to(torch.float32).reshape(test_images.shape[0], 6, 1, 128, 128)
+    test_timeseries_tensor= torch.from_numpy(test_timeseries).to(torch.float32).view(b, 1, t)
+
+    return (train_images_tensor, train_timeseries_tensor, train_labels_tensor, valid_images_tensor, valid_timeseries_tensor, valid_labels_tensor, test_images_tensor, test_timeseries_tensor)
     
 
 def decode_slope(x: np.ndarray) -> np.ndarray:
@@ -215,20 +228,21 @@ class FloodViT(nn.Module):
 if __name__=='__main__':
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     # load data
-    train_images_tensor, train_timeseries_tensor, train_labels_tensor, valid_image_tensor, valid_timeseries_tensor, valid_label_tensor= load_data()
+    train_images_tensor, train_timeseries_tensor, train_labels_tensor, valid_image_tensor, valid_timeseries_tensor, valid_label_tensor, _, _= load_data()
 
     # load model
     pretrained_model= load_model()
     model= FloodViT(pretrained_model, 1)
     # Freeze pretrained_model parameters
     for name, param in model.named_parameters():
-        if name.startswith("pretrained_model") or name.startswith('decoder'):
+        if name.startswith("pretrained_model"):
             param.requires_grad = False
     
     # define optimizer and loss function
     pos_weight = torch.tensor([5.0]).to(device)
     criterion= nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-    optimizer= optim.AdamW(model.parameters(), lr=1e-2)
+    optimizer= optim.AdamW(model.parameters(), lr=1e-3)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=50, gamma=0.5)
 
     # Training loop
     
@@ -239,7 +253,7 @@ if __name__=='__main__':
     batch_size = 32
     train_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
-    num_epochs = 100  # Number of epochs
+    num_epochs = 1000  # Number of epochs
     for epoch in range(num_epochs):
         model.train()  # Set model to training mode
         running_loss = 0.0
@@ -260,5 +274,9 @@ if __name__=='__main__':
             # Accumulate loss for reporting
             running_loss += loss.item()
 
+        scheduler.step()
+
         # Print epoch statistics
         print(f"Epoch [{epoch + 1}/{num_epochs}], Loss: {running_loss / len(train_loader):.4f}, Pred: {pred.sum()}, Label: {label.sum()}")
+
+    torch.save(model.state_dict(), "checkpoints/model_state.pth")

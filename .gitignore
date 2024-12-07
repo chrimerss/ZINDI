@@ -2,3 +2,4 @@
 *.npz
 hls-foundation-os/*
 prithvi/*
+checkpoints/*
